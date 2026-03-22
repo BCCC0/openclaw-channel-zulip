@@ -8,16 +8,30 @@ export type ZulipProbe = {
   error?: string;
 };
 
+export type TlsOptions = {
+  caCertificate?: string;  // PEM-encoded CA certificate (future: not yet implemented)
+  rejectUnauthorized?: boolean;  // Set to false for self-signed certs (insecure)
+};
+
 export async function probeZulip(
   baseUrl: string,
   email: string,
   apiKey: string,
   timeoutMs?: number,
+  tlsOptions?: TlsOptions,
 ): Promise<ZulipProbe> {
   const normalized = normalizeZulipBaseUrl(baseUrl);
   if (!normalized) {
     return { ok: false, error: "invalid baseUrl" };
   }
+
+  // Handle TLS options
+  // WARNING: Setting rejectUnauthorized to false is insecure - only use for development/self-signed certs
+  const previousTlsSetting = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  if (tlsOptions?.rejectUnauthorized === false) {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  }
+
   const controller = new AbortController();
   const timeout = timeoutMs ? setTimeout(() => controller.abort(), Math.max(timeoutMs, 500)) : null;
 
@@ -31,6 +45,7 @@ export async function probeZulip(
         },
         signal: controller.signal,
       },
+      policy: { allowPrivateNetwork: true },
     });
     try {
       if (!res.ok) {
@@ -64,6 +79,12 @@ export async function probeZulip(
   } finally {
     if (timeout) {
       clearTimeout(timeout);
+    }
+    // Restore previous TLS setting
+    if (previousTlsSetting === undefined) {
+      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    } else {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTlsSetting;
     }
   }
 }

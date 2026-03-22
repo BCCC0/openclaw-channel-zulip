@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk";
+import type { TlsOptions } from "./probe.js";
 
 export function normalizeZulipEmojiName(raw?: string | null): string {
   const trimmed = raw?.trim() ?? "";
@@ -63,39 +64,57 @@ export async function downloadZulipUpload(
   baseUrl: string,
   authHeader: string,
   maxBytes: number,
+  tlsOptions?: TlsOptions,
 ): Promise<{ buffer: Buffer; contentType: string; filename: string }> {
   const baseOrigin = new URL(baseUrl).origin;
   const target = new URL(url);
   if (target.origin !== baseOrigin || !target.pathname.includes("/user_uploads/")) {
     throw new Error("Refusing to download Zulip upload from non-Zulip origin");
   }
-  const { response: res, release } = await fetchWithSsrFGuard({
-    url,
-    init: {
-      headers: {
-        Authorization: `Basic ${authHeader}`,
-      },
-    },
-  });
+
+  // Handle TLS options
+  const previousTlsSetting = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+  if (tlsOptions?.rejectUnauthorized === false) {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  }
+
   try {
-    if (!res.ok) {
-      throw new Error(`Zulip upload download failed: ${res.status} ${res.statusText}`);
-    }
-    const contentLength = res.headers.get("content-length");
-    if (contentLength) {
-      const length = Number(contentLength);
-      if (!Number.isNaN(length) && length > maxBytes) {
-        throw new Error(`Zulip upload exceeds max size (${length} > ${maxBytes})`);
+    const { response: res, release } = await fetchWithSsrFGuard({
+      url,
+      init: {
+        headers: {
+          Authorization: `Basic ${authHeader}`,
+        },
+      },
+      policy: { allowPrivateNetwork: true },
+    });
+    try {
+      if (!res.ok) {
+        throw new Error(`Zulip upload download failed: ${res.status} ${res.statusText}`);
       }
+      const contentLength = res.headers.get("content-length");
+      if (contentLength) {
+        const length = Number(contentLength);
+        if (!Number.isNaN(length) && length > maxBytes) {
+          throw new Error(`Zulip upload exceeds max size (${length} > ${maxBytes})`);
+        }
+      }
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (buffer.length > maxBytes) {
+        throw new Error(`Zulip upload exceeds max size (${buffer.length} > ${maxBytes})`);
+      }
+      const contentType = res.headers.get("content-type") ?? "application/octet-stream";
+      const filename = resolveFilename(url, res.headers.get("content-disposition"));
+      return { buffer, contentType, filename };
+    } finally {
+      await release();
     }
-    const buffer = Buffer.from(await res.arrayBuffer());
-    if (buffer.length > maxBytes) {
-      throw new Error(`Zulip upload exceeds max size (${buffer.length} > ${maxBytes})`);
-    }
-    const contentType = res.headers.get("content-type") ?? "application/octet-stream";
-    const filename = resolveFilename(url, res.headers.get("content-disposition"));
-    return { buffer, contentType, filename };
   } finally {
-    await release();
+    // Restore previous TLS setting
+    if (previousTlsSetting === undefined) {
+      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    } else {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTlsSetting;
+    }
   }
 }

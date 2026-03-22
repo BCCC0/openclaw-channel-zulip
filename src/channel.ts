@@ -254,7 +254,12 @@ export const zulipPlugin: ChannelPlugin<ResolvedZulipAccount> = {
       if (!apiKey || !email || !baseUrl) {
         return { ok: false, error: "apiKey, email, or url missing" };
       }
-      return await probeZulip(baseUrl, email, apiKey, timeoutMs);
+      // Extract TLS options from account config
+      const tlsOptions = {
+        caCertificate: account.config?.caCertificate,
+        rejectUnauthorized: account.config?.rejectUnauthorized,
+      };
+      return await probeZulip(baseUrl, email, apiKey, timeoutMs, tlsOptions);
     },
     buildAccountSnapshot: ({ account, runtime, probe }) =>
       ({
